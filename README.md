@@ -13,7 +13,7 @@ The weights are stored in the “model” folder.
 
 Example of command-line execution (first, navigate into the folder hierarchy):
 C:
-cd \MiniCar_AutonomousDriving\NeuralNetCar4
+cd \---------\NeuralNetCar4
 
 Activate the virtual environment:
 venv\Scripts\activate.bat
