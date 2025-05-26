@@ -59,8 +59,9 @@ PURSUER_BULLET_COOLDOWN: int = 45 # フレーム数 (0.75秒 @60fps)
 PURSUER_STATE_COMPONENTS: Dict[str, int] = {
     'obstacle_sensors': 7,
     'target_sensors': 3,
+    'bullet_cooldown_status': 1, # <--- 追加: 弾のクールダウン状態 (正規化された残り時間)
 }
-PURSUER_STATE_SIZE: int = sum(PURSUER_STATE_COMPONENTS.values())
+PURSUER_STATE_SIZE: int = sum(PURSUER_STATE_COMPONENTS.values()) # 自動的に更新される
 PURSUER_SENSOR_ANGLES_OBSTACLE: np.ndarray = np.array([0, -math.pi/6, math.pi/6, -math.pi/3, math.pi/3, -math.pi*0.8, math.pi*0.8], dtype=np.float32)
 PURSUER_SENSOR_RANGE_OBSTACLE: float = 130.0
 PURSUER_SENSOR_ANGLES_TARGET: np.ndarray = np.array([0, -math.pi/8, math.pi/8], dtype=np.float32)
@@ -114,7 +115,7 @@ REPLAY_FREQUENCY: int = 4         # フレームごとの学習頻度 (nフレ�
 # Epsilon Greedy 設定
 EPSILON_START: float = 1.0        # 初期ε値
 EPSILON_MIN: float = 0.05         # 最小ε値
-EPSILON_DECAY_RATE: float = 0.9995 # ε減衰率 (エピソードごと)
+EPSILON_DECAY_RATE: float = 0.975 # ε減衰率 (エピソードごと)
 # モデルファイルパス
 MODEL_DIR: str = "models"
 MODEL_PATH_A0: str = f"{MODEL_DIR}/rl_pursuer_model.weights.h5"
@@ -132,6 +133,7 @@ RWD_A0_CATCH_TARGET: float = 20.0         # 敵に接触（捕獲）したボー
 PNL_A0_OBSTACLE_PROXIMITY: float = -0.5   # 障害物への近接ペナルティ係数
 PNL_A0_OBSTACLE_COLLISION: float = -25.0  # 障害物との衝突ペナルティ
 PNL_A0_TURN: float = -0.05                # 旋回ペナルティ
+PNL_A0_FIRE_ATTEMPT: float = -0.2         # <--- 追加: 弾を発射しようとする行動へのペナルティ
 PROXIMITY_THRESHOLD_RATIO: float = 0.20   # 近接ペナルティ/ボーナスが発生するセンサー範囲に対する割合
 
 # Agent 1 (Evader)
@@ -148,7 +150,7 @@ PNL_A1_TURN: float = -0.05
 TOTAL_EPISODES: int = 120 # 学習総エピソード数 (十分な学習のために増やす)
 # 実行モード時のPythonループスリープ時間（フレームレート制御用）
 # 値を小さくするとCPU負荷は上がるが、よりリアルタイムに近くなる
-RUNNING_MODE_SLEEP_TIME: float = 0.05 # 約 ms (200Hz相当、JSの描画が律速になる想定)
+RUNNING_MODE_SLEEP_TIME: float = 1.0 / 60 # # 約 0.0166秒 (60Hz相当)
 
 # ==============================
 # ユーティリティ & Quadtree
@@ -578,13 +580,29 @@ class PyAgent:
         norm_sensors_obs = 1.0 - np.minimum(self.sensors_obstacle / (self.sensor_range_obstacle + 1e-6), 1.0)
         norm_sensors_target = 1.0 - np.minimum(self.sensors_target / (self.sensor_range_target + 1e-6), 1.0)
 
+        state_components = [norm_sensors_obs, norm_sensors_target]
+
+        # Pursuerの場合、クールダウン情報を追加
+        if self.type == 'pursuer':
+            # クールダウン残り時間を 0.0 (クールダウン完了) ~ 1.0 (最大クールダウン) に正規化
+            # self.bullet_cooldown は int なので Optional でないことを確認
+            normalized_cooldown = np.array([self.bullet_cooldown / PURSUER_BULLET_COOLDOWN], dtype=np.float32)
+            state_components.append(normalized_cooldown)
+
         # 状態ベクトルとして結合
-        state = np.concatenate((norm_sensors_obs, norm_sensors_target))
+        state = np.concatenate(state_components)
 
         # 念のためサイズチェック
         if state.shape[0] != self.state_size:
-            logging.error(f"Agent {self.id} state size mismatch! Expected {self.state_size}, Got {state.shape[0]}")
+            logging.error(
+                f"Agent {self.id} ({self.type}) state size mismatch! "
+                f"Expected {self.state_size} (based on {PURSUER_STATE_COMPONENTS if self.type == 'pursuer' else EVADER_STATE_COMPONENTS}), "
+                f"Got {state.shape[0]} from components: "
+                f"obs({len(norm_sensors_obs)}), tgt({len(norm_sensors_target)})"
+                + (f", cd({len(normalized_cooldown)})" if self.type == 'pursuer' and 'normalized_cooldown' in locals() else "")
+            )
             # サイズが違う場合はゼロベクトルを返すなどエラー処理が必要
+            # (リセットして正しいサイズのゼロベクトルを返すのが安全)
             return np.zeros(self.state_size, dtype=np.float32)
 
         return state.astype(np.float32)
@@ -919,7 +937,21 @@ class SimulationEnv:
             reward += PNL_A1_HIT_BY_BULLET
         elif agent.type == 'pursuer' and other_agent.hit_by_bullet_this_step:
             # 自分が撃った弾が相手に命中した場合 (相手のhitフラグを見る)
+            # 注意: other_agent が弾に当たったのは、このフレームでの other_agent の hit_by_bullet_this_step フラグで判断
+            # この報酬は、弾が当たった次のフレームで Pursuer が認識することになる可能性もある
+            # (弾の当たり判定と報酬計算のタイミングによる)
+            # より直接的に結びつけるなら、_check_collisionsで弾が当たった際に、
+            # その弾のowner_idの報酬に直接加算するイベントベースの方法も考えられる。
+            # ここでは、ステップ終了時の状態を見て判断する。
             reward += RWD_A0_HIT_TARGET
+
+        # --- 発射試行に対するペナルティ (Pursuerのみ) ---
+        if agent.type == 'pursuer' and agent.last_action_taken is not None:
+            # last_action_taken は step() の最初で agent に記録されている
+            # アクション 3, 4, 5 が発射を伴うアクション
+            if agent.last_action_taken in [3, 4, 5]:
+                reward += PNL_A0_FIRE_ATTEMPT
+
 
         # --- アクティブ状態での報酬/ペナルティ ---
         # エージェントがこのステップの開始時にアクティブだった場合のみ適用
@@ -927,7 +959,7 @@ class SimulationEnv:
         # is_active は step 開始時の状態を参照すべきだが、ここでは簡易的に現在の is_active で代用
         # → 正確には step 関数の最初で is_active を記録しておくべき
         # ここでは、衝突で is_active=False になった場合は生存報酬などを与えないようにする
-        if agent.is_active:
+        if agent.is_active: # この is_active は衝突処理後のものなので注意
             if agent_id == 0: # Pursuer
                 reward += RWD_A0_SURVIVAL
                 # 前進報酬: 目標 (Evader) 方向への移動量に応じてボーナス
@@ -936,15 +968,29 @@ class SimulationEnv:
                 last_pos = np.array(agent.last_position)
                 movement = current_pos - last_pos
                 # 角度による目標方向ベクトル (北向き = [0, -1])
-                target_dir = np.array([0.0, -1.0])
-                # 移動ベクトルと目標方向の内積を計算 (正規化)
+                target_dir = np.array([0.0, -1.0]) # これは固定方向、Evaderへの方向ではない
+                # Evaderへの方向ベクトル
+                # トーラス空間を考慮したEvaderへの最短ベクトル
+                dx_evader = other_agent.x - agent.x
+                dy_evader = other_agent.y - agent.y
+                if abs(dx_evader) > SIM_WIDTH / 2: dx_evader -= np.sign(dx_evader) * SIM_WIDTH
+                if abs(dy_evader) > SIM_HEIGHT / 2: dy_evader -= np.sign(dy_evader) * SIM_HEIGHT
+                vec_to_evader = np.array([dx_evader, dy_evader])
+                dist_to_evader = np.linalg.norm(vec_to_evader)
+                
+                if dist_to_evader > 1e-6: # Evaderが重なっていない場合
+                    dir_to_evader = vec_to_evader / dist_to_evader
+                else:
+                    dir_to_evader = np.array([0.0, 0.0]) # 重なっている場合は方向なし
+
                 move_norm = np.linalg.norm(movement)
                 if move_norm > 1e-6:
-                    forward_progress = np.dot(movement / move_norm, target_dir)
+                    # 修正: Evaderの方向 (dir_to_evader) への前進を評価
+                    forward_progress = np.dot(movement / move_norm, dir_to_evader)
                     reward += max(0, forward_progress) * RWD_A0_FORWARD_MOVE
 
                 # 敵への近接ボーナス
-                enemy_dist = np.min(agent.sensors_target)
+                enemy_dist = np.min(agent.sensors_target) # センサー値を使う
                 proximity_threshold = agent.sensor_range_target * PROXIMITY_THRESHOLD_RATIO
                 if enemy_dist < proximity_threshold:
                     # 近いほどボーナス増加 (最大1.0)
@@ -966,22 +1012,27 @@ class SimulationEnv:
                 # トーラス空間考慮 (簡易版: 差が半分以上なら逆方向から)
                 if abs(pursuer_vec[0]) > SIM_WIDTH / 2: pursuer_vec[0] -= np.sign(pursuer_vec[0]) * SIM_WIDTH
                 if abs(pursuer_vec[1]) > SIM_HEIGHT / 2: pursuer_vec[1] -= np.sign(pursuer_vec[1]) * SIM_HEIGHT
-                pursuer_dir = pursuer_vec / (np.linalg.norm(pursuer_vec) + 1e-6)
-                # 離れる方向 = -pursuer_dir
-                escape_dir = -pursuer_dir
+                
+                norm_pursuer_vec = np.linalg.norm(pursuer_vec)
+                if norm_pursuer_vec > 1e-6:
+                    pursuer_dir = pursuer_vec / norm_pursuer_vec
+                    # 離れる方向 = -pursuer_dir
+                    escape_dir = -pursuer_dir
+                else: # 追跡者と重なっている場合
+                    escape_dir = np.array([0.0, 0.0]) # どの方向に動いても良い（あるいはペナルティ）
 
                 current_pos = np.array([agent.x, agent.y])
                 last_pos = np.array(agent.last_position)
                 movement = current_pos - last_pos
                 move_norm = np.linalg.norm(movement)
-                if move_norm > 1e-6:
+                if move_norm > 1e-6 and norm_pursuer_vec > 1e-6 : # 追跡者と重なっていない場合のみ
                     forward_progress = np.dot(movement / move_norm, escape_dir)
                     reward += max(0, forward_progress) * RWD_A1_FORWARD_MOVE
 
                 # 追跡者からの距離ボーナス
-                pursuer_dist = np.min(agent.sensors_target)
+                pursuer_dist = np.min(agent.sensors_target) # センサー値を使う
                 # 遠いほどボーナス増加 (最大1.0)
-                bonus = min(1.0, pursuer_dist / agent.sensor_range_target)
+                bonus = min(1.0, pursuer_dist / agent.sensor_range_target) # 0に近いほどペナルティ的になるように
                 reward += bonus * RWD_A1_PURSUER_DISTANCE
 
                 # 障害物への近接ペナルティ (Pursuerと同様)
@@ -994,10 +1045,15 @@ class SimulationEnv:
             # 旋回ペナルティ (旋回した場合)
             # turn() メソッドで旋回したかどうかのフラグを使う必要がある -> stepメソッドで管理
             # ここでは簡易的に last_action を見て判断
-            turn_penalty = PNL_A0_TURN if agent_id == 0 else PNL_A1_TURN
+            turn_penalty_val = PNL_A0_TURN if agent_id == 0 else PNL_A1_TURN
             if agent.last_action_taken is not None:
-                 if agent_id == 0 and agent.last_action_taken in [0, 2, 3, 5]: reward += turn_penalty
-                 if agent_id == 1 and agent.last_action_taken in [0, 2]: reward += turn_penalty
+                 if agent_id == 0 and agent.last_action_taken in [0, 2, 3, 5]: # 左旋回、右旋回、左旋回+発射、右旋回+発射
+                     reward += turn_penalty_val
+                 if agent_id == 1 and agent.last_action_taken in [0, 2]: # 左旋回、右旋回
+                     reward += turn_penalty_val
+        # else:
+            # 非アクティブになったフレームでの報酬は、衝突などによるものが主。
+            # 例えば、障害物衝突ペナルティは is_active=False になった後でも適用される。
 
         return reward
 
@@ -1234,8 +1290,7 @@ class DQNAgent:
     def decay_epsilon(self):
         """ε値を減衰させる"""
         if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
-            # self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def load(self, filepath: str) -> bool:
         """モデルの重みをファイルから読み込む"""
