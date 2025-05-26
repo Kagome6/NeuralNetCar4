@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>深層強化学習 自動運転シミュレート極</title>
+    <style>
+        /* --- CSSは基本的に変更なし --- */
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #a9a9be; /* 全体背景 */
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 14px;
+        }
+        .container {
+            display: flex;
+            gap: 25px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        canvas {
+            border: 1px solid #555;
+            background-color: #121212; /* 黒系背景 */
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: block;
+            width: 800px; /* JS定数に合わせる */
+            height: 600px; /* JS定数に合わせる */
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 220px;
+            padding: 15px;
+            background-color: #d7d7d7; /* コントロール背景 */
+            border: 1px solid #bbb;
+            border-radius: 8px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+        }
+        .controls h2, .controls h3 {
+            margin-top: 0; margin-bottom: 10px; text-align: center;
+            color: #333; font-size: 1.1em; border-bottom: 1px solid #ccc;
+            padding-bottom: 8px;
+        }
+        .controls button {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            border-radius: 999px; /* 楕円カプセル形状 */
+            background-color: #0058cc; /* ボタン色 */
+            color: white;
+            font-size: 1em;
+            font-weight: 500;
+            text-align: center;
+            transition: background-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .controls button:disabled {
+            background-color: #a0a0a0;
+            color: #e0e0e0;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        .controls button:not(:disabled):hover {
+            background-color: #00419a;
+            box-shadow: 0 2px 5px rgba(0, 88, 204, 0.3);
+        }
+        .info-area {
+            border: 1px solid #c8c8c8;
+            padding: 10px 15px;
+            background-color: #e8e8e8;
+            border-radius: 6px;
+            margin-top: 10px; /* インジケーターとの間に少しマージン */
+        }
+        /* --- 変更箇所: 情報エリアのスタイル微調整 --- */
+        .info-area h3 {
+             font-size: 1.0em; /* 見出しを少し小さく */
+             margin-bottom: 8px;
+             padding-bottom: 5px;
+        }
+        .info-area p {
+             margin: 4px 0; /* 行間を少し詰める */
+             font-size: 0.9em; /* 全体的に少し小さく */
+             color: #333;
+             line-height: 1.4; /* 行の高さを少し調整 */
+         }
+        .info-area span {
+             font-weight: bold;
+             color: #000;
+             /* --- spanの幅やテキスト揃えはpタグ内で調整する方が柔軟かも --- */
+             /* min-width: 40px; display: inline-block; text-align: right; */
+             margin-left: 5px; /* ラベルとの間にスペース */
+        }
+        /* --- 変更箇所ここまで --- */
+        .status-indicator {
+            font-weight: bold; padding: 8px; border-radius: 6px;
+            text-align: center; margin-bottom: 8px;
+            font-size: 0.9em; transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        /* ステータス色はそのまま */
+        .status-idle { background-color: #e0e0e0; color: #616161; }
+        .status-connecting { background-color: #bbdefb; color: #0d47a1;}
+        .status-training { background-color: #c8e6c9; color: #1b5e20; }
+        .status-running { background-color: #fff9c4; color: #f57f17; }
+        .status-error { background-color: #ffcdd2; color: #b71c1c; }
+
+        #trainProgress { width: 100%; height: 12px; margin-top: 5px; display: none; }
+        .indicators { display: flex; justify-content: space-around; align-items: center; padding: 8px 5px; background-color: #e0e0e0; border-radius: 4px; margin-top: 10px; min-height: 30px; }
+        .indicators h4 { margin: 0 10px 0 0; font-size: 0.85em; color: #444; font-weight: normal; }
+        #sensorIndicators, #actionIndicators { display: flex; gap: 5px; flex-wrap: wrap; /* センサーが多い場合折り返す */ }
+        .sensor-dot, .action-dot { width: 15px; height: 15px; border-radius: 50%; background-color: #b0b0b0; transition: background-color 0.1s ease, opacity 0.1s ease; }
+        /* センサーの色分けを追加 */
+        .sensor-dot[data-type="obstacle"] { background-color: #ffa500; }
+        .sensor-dot[data-type="target"] { background-color: #ff4500; }
+        .action-dot.active { box-shadow: 0 0 5px #42a5f5; }
+        /* アクションの色は Agent 0 (Pursuer) 用を想定 */
+        .action-dot.action-0.active, .action-dot.action-3.active { background-color: #ffeb3b; } /* Left */
+        .action-dot.action-1.active, .action-dot.action-4.active { background-color: #81c784; } /* Straight */
+        .action-dot.action-2.active, .action-dot.action-5.active { background-color: #e57373; } /* Right */
+        /* 発射アクションの可視化（オプション）: 縁取りなど */
+        .action-dot.action-3.active, .action-dot.action-4.active, .action-dot.action-5.active {
+            border: 2px solid #0058cc; /* 発射試行時に青い縁取り */
+        }
+
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <canvas id="simulationCanvas" width="800" height="600"></canvas> <!-- サイズ指定を追加 -->
+        <div class="controls">
+            <h2>コントロール</h2>
+            <div id="statusDisplay" class="status-indicator status-idle">未接続</div>
+
+            <button id="connectButton">接続</button>
+            <progress id="trainProgress" max="100" value="0"></progress>
+            <button id="trainButton" disabled>学習開始</button>
+            <button id="stopTrainButton" disabled>学習停止</button>
+            <button id="runButton" disabled>実行開始 (学習済みモデル)</button>
+            <button id="stopRunButton" disabled>実行停止</button>
+
+            <!-- インジケーター (Agent 0用) -->
+            <div class="indicators">
+                <h4>センサー(A0):</h4>
+                <div id="sensorIndicators"></div>
+            </div>
+            <div class="indicators">
+                <h4>アクション(A0):</h4>
+                <div id="actionIndicators"></div>
+            </div>
+
+            <!-- 情報表示エリア (変更箇所) -->
+            <div class="info-area">
+                <h3>情報</h3>
+                <p>モード: <span id="infoMode">N/A</span></p>
+                <p><span id="infoEpisodeFrame">Epi: N/A / Frame: N/A</span></p> <!-- EpisodeとFrameを統合 -->
+                <p id="infoAgent0">A0(追): Rwd: N/A, Eps: N/A, Loss: N/A</p> <!-- Agent 0情報 -->
+                <p id="infoAgent1">A1(逃): Rwd: N/A, Eps: N/A, Loss: N/A</p> <!-- Agent 1情報 -->
+                <p>他: <span id="infoOther"></span></p>
+            </div>
+            <!-- (旧情報表示エリアは削除) -->
+        </div>
+    </div>
+    <!-- JSファイル名は前のを使う前提 -->
+    <script src="simulation.js"></script>
+</body>
+</html>
