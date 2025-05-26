@@ -132,6 +132,7 @@ RWD_A0_CATCH_TARGET: float = 20.0         # 敵に接触（捕獲）したボー
 PNL_A0_OBSTACLE_PROXIMITY: float = -0.5   # 障害物への近接ペナルティ係数
 PNL_A0_OBSTACLE_COLLISION: float = -25.0  # 障害物との衝突ペナルティ
 PNL_A0_TURN: float = -0.05                # 旋回ペナルティ
+PNL_A0_FIRE_ACTION: float = -0.1          # 発射アクションペナルティ
 PROXIMITY_THRESHOLD_RATIO: float = 0.20   # 近接ペナルティ/ボーナスが発生するセンサー範囲に対する割合
 
 # Agent 1 (Evader)
@@ -994,19 +995,28 @@ class SimulationEnv:
             # 旋回ペナルティ (旋回した場合)
             # turn() メソッドで旋回したかどうかのフラグを使う必要がある -> stepメソッドで管理
             # ここでは簡易的に last_action を見て判断
-            turn_penalty = PNL_A0_TURN if agent_id == 0 else PNL_A1_TURN
             if agent.last_action_taken is not None:
-                 if agent_id == 0 and agent.last_action_taken in [0, 2, 3, 5]: reward += turn_penalty
-                 if agent_id == 1 and agent.last_action_taken in [0, 2]: reward += turn_penalty
+                if agent_id == 0: # Pursuer
+                    # 旋回ペナルティ
+                    if agent.last_action_taken in [0, 2, 3, 5]: # L, R, L+F, R+F
+                        reward += PNL_A0_TURN
+                    # 発射アクションペナルティ (命中・非命中問わず)
+                    if agent.last_action_taken in [3, 4, 5]: # L+F, S+F, R+F
+                        reward += PNL_A0_FIRE_ACTION
+                elif agent_id == 1: # Evader
+                    # 旋回ペナルティ
+                    if agent.last_action_taken in [0, 2]: # L, R
+                        reward += PNL_A1_TURN
 
         return reward
 
 
-    def step(self, actions: Dict[int, int]) -> Tuple[Dict[int, np.ndarray], Dict[int, float], bool, Dict]:
+    def step(self, actions: Dict[int, int], pursuer_q_values: Optional[np.ndarray] = None) -> Tuple[Dict[int, np.ndarray], Dict[int, float], bool, Dict]:
         """
         環境を1ステップ進める。
         Args:
             actions (Dict[int, int]): 各エージェントIDとその行動の辞書。
+            pursuer_q_values (Optional[np.ndarray]): 追跡者の現在の状態に対するQ値配列 (発射判断用)。
         Returns:
             Tuple[Dict[int, np.ndarray], Dict[int, float], bool, Dict]:
             (next_states, rewards, done, info)
