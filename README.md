@@ -1,30 +1,29 @@
 # NeuralNetCar4
 Autonomous operation specialized for web display that can be executed locally
+All code files are prepared and should be placed within the same folder hierarchy. Please place them inside a folder named "NeuralNetCar4".
+A virtual environment is required, and libraries such as TensorFlow need to be installed.
 
-A series of code files are prepared in the same folder hierarchy. Place them in a folder called "NeuralNetCar4".
-
+Folder structure:
 NeuralNetCar4/
-├── index.html
-├── simulation.js
-├── main_server_refactored.py
-(venv) folder included
-Weights are stored in the "model" folder.
+├── index.html  
+├── simulation.js  
+├── main_server_refactored.py  
+(venv) folder included  
+The weights are stored in the “model” folder.
 
-Example of execution by command (first enter the folder hierarchy)
+Example of command-line execution (first, navigate into the folder hierarchy):
 C:
-cd \Minicar Autonomous Driving Only\NeuralNetCar4
+cd \MiniCar_AutonomousDriving\NeuralNetCar4
 
-Activate the virtual environment
+Activate the virtual environment:
 venv\Scripts\activate.bat
 
-Execute
+Execute:
 python main_server_refactored.py
 
-Open the HTML file in a browser
+Open the HTML file in a browser:
 file:///C:/---------/NeuralNetCar4/index.html
 
-When stopping
-Ctrl+C
-Do not press repeatedly. Wait patiently.
-
-Currently, there are bugs and lack of functionality in the AI ​​agent mechanism that defeats enemies, and we are currently modifying it.
+To stop the process:
+Press Ctrl+C
+Do not press it multiple times. Wait patiently without panicking.
