@@ -1,4 +1,4 @@
-# NeuralNetCar4
+# NeuralNetCar4 beta
 
 ## Overview
 This project is a locally-running, web-specific, **DNN+RL (Deep Neural Network + Reinforcement Learning)** autonomous obstacle avoidance agent.
